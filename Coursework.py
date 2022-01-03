@@ -10,17 +10,23 @@ import numpy as np
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import matplotlib
+import random
+import time
 from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import KFold, cross_val_score
 from sklearn.svm import SVC
 from sklearn.linear_model import LogisticRegression
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import confusion_matrix, classification_report, accuracy_score
 from sklearn.metrics import RocCurveDisplay
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.feature_selection import SelectKBest, chi2
 from sklearn.pipeline import Pipeline, FeatureUnion
 from sklearn.cluster import KMeans
+from sklearn.neural_network import MLPClassifier
+from tensorflow import keras
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.regularizers import l1
@@ -79,7 +85,7 @@ def heat_map(data, dimensions = 2):
     plt.imshow(data, cmap = 'hot')
     plt.show()
     
-def plot_data(data):
+def plot_all_features(data):
     for i in range(0, data.shape[1]):
         series = data.iloc[:, i]
         plt.figure(i)
@@ -90,18 +96,31 @@ def plot_hist(data):
     for i in range(0, data.shape[1]):
         plt.figure(i)
         plt.hist(data.iloc[:,i])
-        
+
+def plot_3d(x, y, z, color):
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    
+    ax.scatter(x, y, z, c = color)
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    
+    ax.azim = 90
+    
+    plt.show()
+  
 # =============================================================================
 
 #import test data 
-test_filename = 'test_imperson_without4n7_balanced_data.csv'
+test_filename = 'C:/Users/Max/Documents/Max/Birkbeck/2nd Year/Applied Machine Learning/Coursework/test_imperson_without4n7_balanced_data.csv'
 test_df = read_csv(test_filename, header = None)
 X_test = test_df.iloc[1:, 0:152]
 Y_test = test_df.iloc[1:, 152:]
 
 
 #import training data
-train_filename = 'train_imperson_without4n7_balanced_data.csv'
+train_filename = 'C:/Users/Max/Documents/Max/Birkbeck/2nd Year/Applied Machine Learning/Coursework/train_imperson_without4n7_balanced_data.csv'
 train_df = read_csv(train_filename, header =None)
 X_train = train_df.iloc[1:, 0:152]
 Y_train = train_df.iloc[1:, 152:]
@@ -109,55 +128,100 @@ Y_train = train_df.iloc[1:, 152:]
 ##Delete zero variance features 
 X_train, X_test = delete_zero_var(X_train, X_test) 
 
-##Delete any duplicate features by checking correlation against each other
-X_train, X_test = correlation_remove(X_train, X_test)
-
-##Normalise the data
-normalise = MinMaxScaler()
-X_train = normalise.fit_transform(X_train)
-X_test = normalise.transform(X_test)
-
 ##Standarise the data 
-# scaler = StandardScaler()
-# X_train = scaler.fit_transform(X_train)
-# X_test = scaler.transform(X_test)
+scaler = StandardScaler()
+X_train = pd.DataFrame(scaler.fit_transform(X_train))
+X_test = pd.DataFrame(scaler.fit_transform(X_test))
+
+##Kmeans on whole dataset with decision tree to decide how many clusters
+num_clusters = [2, 3, 5, 8, 12, 16, 20, 30]
+scores = []
+for i in range(0,8):
+    kmeans = KMeans(n_clusters=num_clusters[i])
+    kmeans_train = kmeans.fit(X_train)
+    kmeans_test = kmeans.predict(X_test)
+    dt = DecisionTreeClassifier().fit(kmeans_train.labels_.reshape(-1,1), Y_train)
+    score = dt.score(kmeans_test.reshape(-1,1), Y_test)
+    scores.append(score)
+    print(score)
+    
+plt.scatter(num_clusters, scores)
+plt.title('Decision tree classifier accuracy with increasing cluster number')
+plt.xlabel('Cluster number') 
+plt.ylabel('Decision tree accuracy')  
+
+##Optimum cluster number found so append to main test and train sets
+kmeans = KMeans(n_clusters = 8)
+kmeans_train = kmeans.fit(X_train)
+kmeans_test = kmeans.predict(X_test)
+
+cluster_train = pd.DataFrame(kmeans_train.labels_)
+cluster_test = pd.DataFrame(kmeans_test)
 
 
 ##PCA to reduce dimensions of data
-pca_model = PCA(.95)
-pca_train_features = pd.DataFrame(pca_model.fit_transform(X_train)).add_prefix('pca_')
-pca_test_features = pd.DataFrame(pca_model.transform(X_test)).add_prefix('pca_')
+pca_model = PCA(.97)
+pca_train_features = pca_model.fit_transform(X_train)
+pca_test_features = pca_model.transform(X_test)
+
+#pca_train_features = normalise.fit_transform(pca_train_features)
+#pca_test_features = normalise.fit_transform(pca_test_features)
+
+pca_train_features = pd.DataFrame(pca_train_features).add_prefix('pca_')
+pca_test_features = pd.DataFrame(pca_test_features).add_prefix('pca_')
+
+
+##Autoencoder to generate features
+input_size = X_train.shape[1] 
+hidden_1_size = input_size//2
+hidden_2_size = hidden_1_size//2
+code_size = 2
+
+input_layer = Input(shape = (input_size,))
+hidden_1 = Dense(hidden_1_size, activation = 'relu')(input_layer)
+hidden_2 = Dense(hidden_2_size, activation = 'relu')(hidden_1)
+code = Dense(code_size, activation = 'relu', activity_regularizer=l1(10e-6))(hidden_2)
+
+hidden_3 = Dense(hidden_2_size, activation = 'relu')(code)
+hidden_4 = Dense(hidden_1_size, activation = 'relu')(hidden_3)
+output_layer = Dense(input_size, activation = 'sigmoid')(hidden_4)
+
+autoencoder = Model(input_layer, output_layer)
+
+autoencoder.compile(optimizer='adam', loss='binary_crossentropy')
+autoencoder.fit(X_train, X_train, epochs=5)
+                
+encoded = Model(input_layer, code)
+
+X_train_auto = encoded.predict(X_train)
+X_test_auto = encoded.predict(X_test)
+
+X_train_auto = pd.DataFrame(X_train_auto).add_prefix('auto_')
+X_test_auto = pd.DataFrame(X_test_auto).add_prefix('auto_')
+
+
+## Concatanate all generated features
 X_train = pd.concat((pd.DataFrame(X_train), pca_train_features), axis = 1)
 X_test = pd.concat((pd.DataFrame(X_test), pca_test_features), axis = 1)
 
-##Autoencoder to generate features 
-# input_size = X_train.shape[1] 
-# hidden_1_size = input_size//2
-# code_size = hidden_1_size//4
-
-# input_layer = Input(shape = (input_size,))
-# hidden_1 = Dense(hidden_1_size, activation = 'relu')(input_layer)
-# code = Dense(code_size, activation = 'relu', activity_regularizer=l1(10e-6))(hidden_1)
-
-# hidden_2 = Dense(hidden_1_size, activation = 'relu')(code)
-# output_layer = Dense(input_size, activation = 'sigmoid')(hidden_2)
-
-# autoencoder = Model(input_layer, output_layer)
-# encoded = Model(input_layer, code)
-
-# autoencoder.compile(optimizer='adam', loss='binary_crossentropy')
-# autoencoder.fit(X_train, X_train, epochs=3,
-#                 validation_split = 0.1)
-
-# X_train_auto = encoded.predict(X_train)
-# X_test_auto = encoded.predict(X_test)
-
-# X_train = np.concatenate((X_train, X_train_auto), axis = 1)
-# X_test = np.concatenate((X_test, X_test_auto), axis = 1)
+X_train = pd.concat((pd.DataFrame(X_train), X_train_auto), axis = 1)
+X_test = pd.concat((pd.DataFrame(X_test), X_test_auto), axis = 1)
+ 
+X_train['cluster'] = cluster_train
+X_test['cluster'] = cluster_test
 
 
-##Plot scatter plot of two variables and color code. 
-# plt.scatter(x = X_train[:,0], y = X_train[:, 1], c = Y_train['155'])
+##KMeans clustering on features and adding cluster number as feature
+#kmeans = KMeans(n_clusters = 3).fit(X_train.iloc[:, [4,13,48]])
+n_clusters = 3
+kmeans = KMeans(n_clusters = n_clusters).fit(X_train.loc[:,['pca_0', 'pca_1', 'pca_2']])
+#labels = kmeans.labels_/n_clusters #Use if data has been normalised
+labels = kmeans.labels_ #Use if data has been standardised
+X_train['clusters'] = pd.DataFrame(labels)
+
+x_test_pred = kmeans.predict(X_test.loc[:, ['pca_0', 'pca_1', 'pca_2']])
+#x_test_pred = x_test_pred/n_clusters
+X_test['clusters'] = pd.DataFrame(x_test_pred)
 
 ##ExtraTreesClassifier to evaluate importance of features  
 model = ExtraTreesClassifier()
@@ -171,104 +235,47 @@ top_features_train = pd.DataFrame(X_train.iloc[:, features])
 top_features_test = pd.DataFrame(X_test.iloc[:, features])
 
 
-##KMeans clustering on features and adding cluster number as feature
-kmeans = KMeans(n_clusters = 2).fit(X_train.iloc[:, [4,13,48]])
-labels = kmeans.labels_
-X_train = np.concatenate((X_train, np.reshape(labels,(labels.shape[0],1))),
-                          axis = 1)
-
-x_test_predi = kmeans.predict(X_test.iloc[:, [4,13,48]])
-X_test = np.concatenate((X_test, np.reshape(x_test_predi,
-                                            (x_test_predi.shape[0], 1))),
-                        axis = 1)
-labels = pd.DataFrame(labels)
-plt.scatter(x = labels.index, y = labels[0])
-plt.show()
-
-
-# ##Standarise the data 
-# scaler = StandardScaler()
-# X_train = scaler.fit_transform(X_train)
-# X_test = scaler.transform(X_test)
-
 # ##SelectKBest on training data
-# # X_train = pd.DataFrame(X_train)
-# # X_test = pd.DataFrame(X_test)
-# # select_best = SelectKBest(k=10)
-# # best_model = select_best.fit(X_train, Y_train)
-# # feature_index = best_model.get_support(indices=(True))
-# # X_train = X_train.iloc[:, feature_index]
-# # X_test = X_test.iloc[:, feature_index]
+X_train = pd.DataFrame(X_train)
+X_test = pd.DataFrame(X_test)
+select_best = SelectKBest(k=100)
+best_model = select_best.fit(X_train, Y_train)
+feature_index = best_model.get_support(indices=(True))
+X_train = X_train.iloc[:, feature_index]
+X_test = X_test.iloc[:, feature_index]
 
 
-# ##Logistic reg model - make sure standardisation happens after norm.
-# Y_train = np.array(np.ravel(Y_train))
-# Y_test = np.array(np.ravel(Y_test))
-# log_model = LogisticRegression()
-# kfold = KFold(n_splits = 10)
-# results = cross_val_score(log_model, X_train, Y_train, cv = kfold)
-# print(results.mean())
+##Pipeline to evaluate different models
+models = [] 
+models.append(('LogReg', LogisticRegression(random_state=(7))))
+#models.append(('SVC', SVC(random_state=(7))))
+#models.append(('RandTClass', RandomForestClassifier(random_state=(7))))
+#models.append(('LinDisAnal', LinearDiscriminantAnalysis(random_state=(7))))
+models.append(('MLPClass', MLPClassifier(hidden_layer_sizes =(80,40,5),
+                                          activation = 'tanh',
+                                          solver='adam',
+                                          random_state=(7))))
 
-# log_fit = log_model.fit(X_train, Y_train)
-# log_res = log_fit.predict(X_test)
-# print(confusion_matrix(Y_test, log_res))
-# print(log_fit.score(X_test, Y_test))
+names = []
+reports = []
+scoring = 'accuracy'
 
-
-##SVC Classifier - need to reduce number of features to work. 
-# svm_model = SVC()
-# kfold = KFold(n_splits = 5)
-# results = cross_val_score(svm_model, X_train, Y_train, cv = kfold)
-# print(results.mean())
-# svm_model.fit(X_train, Y_train)
-# print(svm_model.score(X_test, np.array(np.ravel(Y_test))))
-
-
-##Random Forrest Clasifier 
-#rf_model = RandomForestClassifier()
-
-# features = [] 
-# features.append(('standardize', StandardScaler()))
-# features.append(('PCA', PCA(n_components=2)))
-# features.append(('select_best', SelectKBest()))
-# feature_union = FeatureUnion(features)
-
-# estimators = []
-# estimators.append(('features', feature_union))
-# #estimators.append(('Logistic reg', LogisticRegression(C=10)))
-# estimators.append(('svm', SVC()))
-# model = Pipeline(estimators)
-
-
-# model.fit(X_train, Y_train)
-# predictions = model.predict(X_test)
-#print(predictions)
-# print(confusion_matrix(Y_test, predictions))
-# print(model.score(X_test, Y_test))
-
-# features_selected = model.named_steps['select_best'].support_
-# print(features_selected)
-
-# X_train, list_to_remove = delete_zero_cols(X_train)
-# X_test = X_test.drop(X_test.columns[list_to_remove], axis = 1)
+for name, model in models:
+    start = time.time()
+    model.fit(X_train, Y_train)
+    end = time.time()
+    ttb = end-start
+    train_score = model.score(X_train, Y_train)
+    test_score = model.score(X_test, Y_test)
+    names.append(name)
+    reports.append(classification_report(Y_test, model.predict(X_test)))
+    msg = "%s: %f %f %f" % (name, train_score, test_score, ttb)
+    print(msg)
 
 
 
 
-# features = [] 
-# features.append(('standardize', StandardScaler()))
-# features.append(('PCA', PCA(.95)))
-# features.append(('select_best', SelectKBest()))
-# feature_union = FeatureUnion(features)
 
-# estimators = []
-# estimators.append(('features', feature_union))
-# estimators.append(('RF', RandomForestClassifier()))
-# model = Pipeline(estimators)
-
-# k_fold = KFold(n_splits = 5)
-# results = cross_val_score(model, X_train, Y_train, cv = k_fold)
-# print(results.mean())
 
 
 
@@ -285,19 +292,7 @@ plt.show()
 # plt.show()
 # print(confusion_matrix(np.ravel(Y_test), rf_stan_predictions))
 
-##Perform PCA to reduce number of features. Includes components that explain
-# ~95% of the variance. Fit RF on PC's. Gives 53% accuracy 
-# pca_train, pca_test = pca(X_train, X_test)
-# rf_model = RandomForestClassifier().fit(pca_train, Y_train)
-# rf_predictions = rf_model.predict(X_test)
-# rf_disp = RocCurveDisplay.from_estimator(rf_model, X_test, Y_test)
-# plt.show()
-# print(confusion_matrix(Y_test, rf_predictions))
 
-##Perform the same PCA above but standardize data before
-# scaled_X_train, scaled_X_test = standardise(X_train, X_test)
-# pca_train, pca_test = pca(scaled_X_train, scaled_X_test)
-# print(randomforrest(pca_train, Y_train, pca_test, Y_test))
  
 
 
