@@ -133,6 +133,8 @@ scaler = StandardScaler()
 X_train = pd.DataFrame(scaler.fit_transform(X_train))
 X_test = pd.DataFrame(scaler.fit_transform(X_test))
 
+##FEATURE GENERATION
+
 ##Kmeans on whole dataset with decision tree to decide how many clusters
 num_clusters = [2, 3, 5, 8, 12, 16, 20, 30]
 scores = []
@@ -140,7 +142,7 @@ for i in range(0,8):
     kmeans = KMeans(n_clusters=num_clusters[i])
     kmeans_train = kmeans.fit(X_train)
     kmeans_test = kmeans.predict(X_test)
-    dt = DecisionTreeClassifier().fit(kmeans_train.labels_.reshape(-1,1), Y_train)
+    dt = DecisionTreeClassifier(random_state=(7)).fit(kmeans_train.labels_.reshape(-1,1), Y_train)
     score = dt.score(kmeans_test.reshape(-1,1), Y_test)
     scores.append(score)
     print(score)
@@ -151,7 +153,7 @@ plt.xlabel('Cluster number')
 plt.ylabel('Decision tree accuracy')  
 
 ##Optimum cluster number found so append to main test and train sets
-kmeans = KMeans(n_clusters = 8)
+kmeans = KMeans(n_clusters = 16)
 kmeans_train = kmeans.fit(X_train)
 kmeans_test = kmeans.predict(X_test)
 
@@ -171,45 +173,44 @@ pca_train_features = pd.DataFrame(pca_train_features).add_prefix('pca_')
 pca_test_features = pd.DataFrame(pca_test_features).add_prefix('pca_')
 
 
-##Autoencoder to generate features
+##Stacked auto using keras
+normalise = MinMaxScaler()
+X_train = normalise.fit_transform(X_train)
+X_test = normalise.fit_transform(X_test)
+
 input_size = X_train.shape[1] 
 hidden_1_size = input_size//2
-hidden_2_size = hidden_1_size//2
-code_size = 2
+code_size = 5
 
-input_layer = Input(shape = (input_size,))
-hidden_1 = Dense(hidden_1_size, activation = 'relu')(input_layer)
-hidden_2 = Dense(hidden_2_size, activation = 'relu')(hidden_1)
-code = Dense(code_size, activation = 'relu', activity_regularizer=l1(10e-6))(hidden_2)
+stacked_encoder = keras.models.Sequential([
+    keras.layers.Dense(input_size, activation = 'selu'),
+    keras.layers.Dense(hidden_1_size, activation = 'selu'),
+    keras.layers.Dense(code_size, activation = 'selu')])
 
-hidden_3 = Dense(hidden_2_size, activation = 'relu')(code)
-hidden_4 = Dense(hidden_1_size, activation = 'relu')(hidden_3)
-output_layer = Dense(input_size, activation = 'sigmoid')(hidden_4)
+stacked_decoder = keras.models.Sequential([
+    keras.layers.Dense(hidden_1_size, activation = 'selu', input_shape = [code_size]),
+    keras.layers.Dense(input_size, activation = 'sigmoid')])
 
-autoencoder = Model(input_layer, output_layer)
+stacked_ae = keras.models.Sequential([stacked_encoder, stacked_decoder])
+stacked_ae.compile(loss='binary_crossentropy',
+                   optimizer = 'adam')
+stacked_ae.fit(X_train, X_train, epochs = 5)
 
-autoencoder.compile(optimizer='adam', loss='binary_crossentropy')
-autoencoder.fit(X_train, X_train, epochs=5)
-                
-encoded = Model(input_layer, code)
-
-X_train_auto = encoded.predict(X_train)
-X_test_auto = encoded.predict(X_test)
-
-X_train_auto = pd.DataFrame(X_train_auto).add_prefix('auto_')
-X_test_auto = pd.DataFrame(X_test_auto).add_prefix('auto_')
+sae_train = pd.DataFrame(stacked_encoder.predict(X_train)).add_prefix('sae_')
+sae_test = pd.DataFrame(stacked_encoder.predict(X_test)).add_prefix('sae_')
 
 
 ## Concatanate all generated features
 X_train = pd.concat((pd.DataFrame(X_train), pca_train_features), axis = 1)
 X_test = pd.concat((pd.DataFrame(X_test), pca_test_features), axis = 1)
 
-X_train = pd.concat((pd.DataFrame(X_train), X_train_auto), axis = 1)
-X_test = pd.concat((pd.DataFrame(X_test), X_test_auto), axis = 1)
+X_train = pd.concat((pd.DataFrame(X_train), sae_train), axis = 1)
+X_test = pd.concat((pd.DataFrame(X_test), sae_test), axis = 1)
  
-X_train['cluster'] = cluster_train
-X_test['cluster'] = cluster_test
+X_train['cluster'] = cluster_train/16
+X_test['cluster'] = cluster_test/16
 
+##SELECTING BEST FEATURES
 
 ##KMeans clustering on features and adding cluster number as feature
 #kmeans = KMeans(n_clusters = 3).fit(X_train.iloc[:, [4,13,48]])
@@ -245,6 +246,8 @@ X_train = X_train.iloc[:, feature_index]
 X_test = X_test.iloc[:, feature_index]
 
 
+
+
 ##Pipeline to evaluate different models
 models = [] 
 models.append(('LogReg', LogisticRegression(random_state=(7))))
@@ -252,9 +255,9 @@ models.append(('LogReg', LogisticRegression(random_state=(7))))
 #models.append(('RandTClass', RandomForestClassifier(random_state=(7))))
 #models.append(('LinDisAnal', LinearDiscriminantAnalysis(random_state=(7))))
 models.append(('MLPClass', MLPClassifier(hidden_layer_sizes =(80,40,5),
-                                          activation = 'tanh',
-                                          solver='adam',
-                                          random_state=(7))))
+                                            activation = 'tanh',
+                                            solver='adam',
+                                            random_state=(7))))
 
 names = []
 reports = []
