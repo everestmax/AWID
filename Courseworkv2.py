@@ -34,19 +34,6 @@ from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.regularizers import l1
 from tensorflow.keras.optimizers import Adam
 
-def grade_features(fe_scores):
-    scores = pd.DataFrame(0, index = [0], columns=X_train.columns)
-    
-    for score in fe_scores:
-        for i in range(0, len(score[0])):
-            feat_name = score.iloc[i].name
-            scores.loc[0, feat_name] += i
-    return scores.sort_values(by=[0], axis = 1)
-
-seed_value = 7           
-tf.random.set_seed(seed_value)
-np.random.seed(seed_value)
-random.seed(seed_value)
 
 def load_data():
     #import data 
@@ -80,18 +67,14 @@ def standardise(X_train, X_test):
     
     return pd.DataFrame(X_train, columns = cols), pd.DataFrame(X_test, columns = cols)
 
-def sae(X_train, X_test, noise = 0.4, code_size = 2,
-        loss = 'binary_crossentropy', epochs = 5, optimizer = 'adam'):
+def sae(X_train, X_test, code_size = 2, loss = 'binary_crossentropy',
+        epochs = 5, optimizer = 'adam'):
 
-    ##Function to implement a stacked denoising autoencoder to
+    ##Function to implement a stacked autoencoder to
     ## generate features from training dataset
+  
     
-    noise = noise
-    
-    X_train_noisy = X_train + noise * np.random.normal(size=X_train.shape)
-    
-    
-    input_size = X_train_noisy.shape[1] 
+    input_size = X_train.shape[1] 
     hidden_1_size = input_size//2
     code_size = code_size
     
@@ -107,7 +90,7 @@ def sae(X_train, X_test, noise = 0.4, code_size = 2,
     stacked_ae = keras.models.Sequential([stacked_encoder, stacked_decoder])
     stacked_ae.compile(loss=loss,
                        optimizer = optimizer)
-    stacked_ae.fit(X_train_noisy, X_train, epochs = epochs)
+    stacked_ae.fit(X_train, X_train, epochs = epochs)
     
     sae_train = pd.DataFrame(stacked_encoder.predict(X_train)).add_prefix('sae_')
     sae_test = pd.DataFrame(stacked_encoder.predict(X_test)).add_prefix('sae_')
@@ -163,18 +146,21 @@ def select_features( X_train, X_test, Y_train, num_features = 50):
     features_normalised = pd.DataFrame(features_normalised, index = X_train.columns)
     ExT_feat_sort = features_normalised.sort_values(by=[0], ascending = False)
     
-    
     ##SelectKBest on training data
     select_best = SelectKBest(k='all')
     best_model = select_best.fit(X_train, Y_train)
     sk_scores = pd.DataFrame(best_model.scores_, index = X_train.columns)
     SKBest_feat_sort = sk_scores.sort_values(by=[0], ascending = False)
     
-    print('skbest', SKBest_feat_sort)
-    print( ExT_feat_sort)
+    scores = pd.DataFrame(0, index = [0], columns=X_train.columns)
+    fe_scores = [SKBest_feat_sort, ExT_feat_sort]
     
-    #Grade the scores
-    scores = grade_features([SKBest_feat_sort, ExT_feat_sort])
+    for score in fe_scores:
+        for i in range(0, len(score[0])):
+            feat_name = score.iloc[i].name
+            scores.loc[0, feat_name] += i
+    scores = scores.sort_values(by=0, axis = 1)
+    
     features = scores.iloc[:, 0:num_features]
     
     #Select them from training and test sets
@@ -184,26 +170,20 @@ def select_features( X_train, X_test, Y_train, num_features = 50):
     return X_train, X_test, features
 
 
+seed_value = 7           
+tf.random.set_seed(seed_value)
+np.random.seed(seed_value)
+random.seed(seed_value)
 
 overview = []
+
+
 # =============================================================================
 # Logistic Regression model
 X_train, X_test, Y_train, Y_test = load_data()
 
-X_train, X_test = normalise(X_train, X_test)
-
-X_train, X_test = sae(X_train, X_test, noise = .25, code_size = 20)
-
-X_train, X_test = standardise(X_train, X_test)
-
-X_train, X_test, features = select_features(X_train, X_test, Y_train, num_features = 20)
-
-print('Selected features:', features)
-
-overview = []
-
 #Cross val and training error 
-log_model = LogisticRegression(random_state=(7))
+log_model = LogisticRegression()
 kfold = KFold(n_splits=5)
 cross_val = cross_val_score(log_model, X_train, Y_train, cv=kfold)
 cross_val_mean = cross_val.mean()
@@ -214,7 +194,30 @@ log_model_fit = log_model.fit(X_train, Y_train)
 log_preds = log_model_fit.predict(X_test)
 class_report = classification_report(Y_test, log_preds, output_dict=True)
 confusion_mat = confusion_matrix(Y_test, log_preds)
+print('Logistic Regression testing results',confusion_mat,
+      classification_report(Y_test, log_preds))
 
+X_train, X_test = normalise(X_train, X_test)
+
+X_train, X_test = sae(X_train, X_test, code_size = 30)
+
+X_train, X_test = k_cluster(X_train, X_test, n_clusters = 5, normalise = False)
+
+X_train, X_test, features = select_features(X_train, X_test, Y_train, num_features = 5)
+
+
+#Cross val and training error 
+log_model = LogisticRegression()
+kfold = KFold(n_splits=5)
+cross_val = cross_val_score(log_model, X_train, Y_train, cv=kfold)
+cross_val_mean = cross_val.mean()
+print('Log Regression training accuracy:', cross_val_mean)
+
+#Test scores
+log_model_fit = log_model.fit(X_train, Y_train)
+log_preds = log_model_fit.predict(X_test)
+class_report = classification_report(Y_test, log_preds, output_dict=True)
+confusion_mat = confusion_matrix(Y_test, log_preds)
 print('Logistic Regression testing results',confusion_mat,
       classification_report(Y_test, log_preds))
 
@@ -224,6 +227,31 @@ overview.append(['logistic reg', cross_val_mean, class_report['accuracy']])
 
 # =============================================================================
 # Support vector classifier
+X_train, X_test, Y_train, Y_test = load_data()
+
+X_train, X_test = normalise(X_train, X_test)
+
+X_train, X_test = sae(X_train, X_test, code_size = 5)
+
+#X_train, X_test = k_cluster(X_train, X_test, n_clusters = 5, normalise = False)
+
+X_train, X_test, features = select_features(X_train, X_test, Y_train, num_features = 5)
+
+
+#Cross val and training error 
+svc_model_1 = SVC(random_state=(7))
+kfold = KFold(n_splits=3)
+cross_val = cross_val_score(svc_model_1, X_train, Y_train, cv=kfold)
+cross_val_mean = cross_val.mean()
+print('Support vector training accuracy:', cross_val_mean)
+
+#Test scores
+svc_model_1 = svc_model_1.fit(X_train, Y_train)
+svc_1_preds = svc_model_1.predict(X_test)
+class_report = classification_report(Y_test, svc_1_preds, output_dict=True)
+confusion_mat = confusion_matrix(Y_test, svc_1_preds)
+print('Support vector testing results',confusion_mat,
+      classification_report(Y_test, svc_1_preds))
 
 # =============================================================================
 
@@ -232,27 +260,81 @@ overview.append(['logistic reg', cross_val_mean, class_report['accuracy']])
 # Random Forrest 
 X_train, X_test, Y_train, Y_test = load_data()
 
+#Cross val and training error 
+rf_model_1 = RandomForestClassifier(random_state=(7))
+kfold = KFold(n_splits=5)
+cross_val = cross_val_score(rf_model_1, X_train, Y_train, cv=kfold)
+cross_val_mean = cross_val.mean()
+print('Random Forrest training accuracy:', cross_val_mean)
+
+#Test scores
+rf_model_1_fit = rf_model_1.fit(X_train, Y_train)
+rf_1_preds = rf_model_1_fit.predict(X_test)
+class_report = classification_report(Y_test, rf_1_preds, output_dict=True)
+confusion_mat = confusion_matrix(Y_test, rf_1_preds)
+print('Random Forrest testing results',confusion_mat,
+      classification_report(Y_test, rf_1_preds))
+
 X_train, X_test = normalise(X_train, X_test)
 
-X_train, X_test = sae(X_train, X_test, noise = .4, code_size = 2)
+X_train, X_test = sae(X_train, X_test, code_size = 30, epochs = 5)
 
-X_train_final, X_test_final, features = select_features(X_train, X_test, Y_train, num_features = 20)
+X_train, X_test, features = select_features(X_train, X_test, Y_train, num_features = 5)
 
-rf_model = RandomForestClassifier(n_estimators = 500, max_depth=(2))
-rf_model = rf_model.fit(X_train_final, Y_train)
-# params = {'n_estimators': (50, 100, 300, 1000), 'max_depth':(2, 10, 50, 200)}
-# clf = GridSearchCV(rf_model, params)
-# grid = clf.fit(X_train, Y_train)
+rf_model_2 = RandomForestClassifier(random_state=(7))
+kfold = KFold(n_splits=5)
+cross_val = cross_val_score(rf_model_2, X_train, Y_train, cv=kfold)
+cross_val_mean = cross_val.mean()
+print('Random Forrest training accuracy:', cross_val_mean)
 
-rf_preds = rf_model.predict(X_test_final)
-class_report = classification_report(Y_test, rf_preds)
-confusion_mat = confusion_matrix(Y_test, rf_preds)
+rf_model_2 = rf_model_2.fit(X_train, Y_train)
+rf_preds_2 = rf_model_2.predict(X_test)
+class_report = classification_report(Y_test, rf_preds_2)
+confusion_mat = confusion_matrix(Y_test, rf_preds_2)
 print(class_report)
 print(confusion_mat)
 
 # # =============================================================================
 
+# =============================================================================
+# Multi layer perceptron 
+X_train, X_test, Y_train, Y_test = load_data()
 
+X_train, X_test = normalise(X_train, X_test)
+
+X_train, X_test = sae(X_train, X_test, code_size = 3, epochs = 10)
+
+
+X_train, X_test, features = select_features(X_train, X_test, Y_train, num_features = 5)
+
+
+mlp_model = MLPClassifier(hidden_layer_sizes =(2,1),
+                                            activation = 'tanh',
+                                            solver='adam',
+                                            random_state=(7))
+
+params = {'activation': ('relu', 'tanh'), 
+          'alpha':(0.0001, 0.001, 0.01),
+          'batch_size': (200, 500, 2000)}
+
+clf = GridSearchCV(mlp_model, params, cv = 4)
+grid = clf.fit(X_train, Y_train)
+
+#Cross val and training error 
+kfold = KFold(n_splits=5)
+cross_val = cross_val_score(mlp_model, X_train, Y_train, cv=kfold)
+cross_val_mean = cross_val.mean()
+print('MLP training accuracy:', cross_val_mean)
+
+#Test scores
+mlp_model_fit = mlp_model.fit(X_train, Y_train)
+mlp_preds = mlp_model_fit.predict(X_test)
+class_report = classification_report(Y_test, mlp_preds, output_dict=True)
+confusion_mat = confusion_matrix(Y_test, mlp_preds)
+print('MLP testing results',confusion_mat,
+      classification_report(Y_test, mlp_preds))
+
+# =============================================================================
 
 
 
